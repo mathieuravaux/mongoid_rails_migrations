@@ -183,11 +183,11 @@ module Mongoid #:nodoc
 
   class Migrator#:nodoc:
     class << self
-      def migrate(migrations_path, target_version = nil)
+      def migrate(migrations_path, target_version = nil, mongoid_session = :default)
         case
-          when target_version.nil?              then up(migrations_path, target_version)
-          when current_version > target_version then down(migrations_path, target_version)
-          else                                       up(migrations_path, target_version)
+          when target_version.nil?              then up(migrations_path, target_version, mongoid_session)
+          when current_version > target_version then down(migrations_path, target_version, mongoid_session)
+          else                                       up(migrations_path, target_version, mongoid_session)
         end
       end
 
@@ -199,12 +199,12 @@ module Mongoid #:nodoc
         move(:up, migrations_path, steps)
       end
 
-      def up(migrations_path, target_version = nil)
-        self.new(:up, migrations_path, target_version).migrate
+      def up(migrations_path, target_version = nil, mongoid_session=:default)
+        self.new(:up, migrations_path, target_version, mongoid_session).migrate
       end
 
-      def down(migrations_path, target_version = nil)
-        self.new(:down, migrations_path, target_version).migrate
+      def down(migrations_path, target_version = nil, mongoid_session=:default)
+        self.new(:down, migrations_path, target_version, mongoid_session).migrate
       end
 
       def run(direction, migrations_path, target_version)
@@ -220,20 +220,12 @@ module Mongoid #:nodoc
       #   'data_migrations'
       # end
 
-      def get_all_versions
-        # table = Arel::Table.new(schema_migrations_table_name)
-        #         Base.connection.select_values(table.project(table['version']).to_sql).map(&:to_i).sort
-        DataMigration.all.map {|datamigration| datamigration.version.to_i }.sort
+      def get_all_versions(mongoid_session=:default)
+        new(nil, nil, nil, mongoid_session).get_all_versions
       end
 
-      def current_version
-        # sm_table = schema_migrations_table_name
-        # if Base.connection.table_exists?(sm_table)
-        #   get_all_versions.max || 0
-        # else
-        #   0
-        # end
-        get_all_versions.max || 0
+      def current_version(mongoid_session=:default)
+        get_all_versions(mongoid_session).max || 0
       end
 
       def proper_table_name(name)
@@ -256,10 +248,17 @@ module Mongoid #:nodoc
       end
     end
 
-    def initialize(direction, migrations_path, target_version = nil)
+    def initialize(direction, migrations_path, target_version = nil, mongoid_session=:default)
       # raise StandardError.new("This database does not yet support migrations") unless Base.connection.supports_migrations?
       # Base.connection.initialize_schema_migrations_table
-      @direction, @migrations_path, @target_version = direction, migrations_path, target_version
+      @direction, @migrations_path, @target_version, @mongoid_session = direction, migrations_path, target_version, mongoid_session
+    end
+
+    def get_all_versions
+      # table = Arel::Table.new(schema_migrations_table_name)
+      #         Base.connection.select_values(table.project(table['version']).to_sql).map(&:to_i).sort
+      #
+      migration_model.all.map {|datamigration| datamigration.version.to_i }.sort
     end
 
     def current_version
@@ -360,7 +359,7 @@ module Mongoid #:nodoc
     end
 
     def migrated
-      @migrated_versions ||= self.class.get_all_versions
+      @migrated_versions ||= self.get_all_versions
     end
 
     private
@@ -377,10 +376,21 @@ module Mongoid #:nodoc
         # end
         if down?
           @migrated_versions.delete(version)
-          DataMigration.where(:version => version.to_s).first.destroy
+          migration_model.where(:version => version.to_s).first.destroy
         else
           @migrated_versions.push(version).sort!
-          DataMigration.create(:version => version.to_s)
+          migration_model.create(:version => version.to_s)
+        end
+      end
+
+      def migration_model
+        @migration_model ||= begin
+          session = @mongoid_session
+          Class.new do
+            include Mongoid::Document
+            field :version
+            store_in session: session, collection: 'data_migrations'
+          end
         end
       end
 
